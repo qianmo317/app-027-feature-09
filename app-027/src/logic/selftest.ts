@@ -423,15 +423,15 @@ export async function runSelfTest(settings: CutSettings = DEFAULT_CUT_SETTINGS, 
   const noOffset = computeShape(starShape, { ...settings, useBladeOffset: false }, mat)
   const withOffset = computeShape(starShape, { ...settings, useBladeOffset: true }, mat)
   const starId = starShape.contours[0].id
-  const offEntry = withOffset.byId.get(starId)
+  const appliedEntry = withOffset.byId.get(starId)
   const noEntry = noOffset.byId.get(starId)
-  const offsetMsg = offEntry?.offsetMessage ?? ''
-  const geometryChanged = JSON.stringify(offEntry?.runs) !== JSON.stringify(noEntry?.runs)
+  const offsetMsg = appliedEntry?.offsetMessage ?? ''
+  const geometryChanged = JSON.stringify(appliedEntry?.runs) !== JSON.stringify(noEntry?.runs)
   checks.push(
     ok(
       'blade-offset',
       '刀补：闭合轮廓按 bladeOffset 偏置，凹角自交自动裁剪',
-      geometryChanged && (offEntry?.offsetOk ?? false),
+      geometryChanged && (appliedEntry?.offsetOk ?? false),
       `五角星（外 R40 / 内 R20，10 个凹角）刀补 ${mat.bladeOffsetMm}mm：${offsetMsg}｜几何已改变 = ${geometryChanged}`,
     ),
   )
@@ -439,7 +439,7 @@ export async function runSelfTest(settings: CutSettings = DEFAULT_CUT_SETTINGS, 
   const thinInner = rectContour('st_thin', 30, 39.85, 20, 0.3)
   const outerSquare = rectContour('st_outer', 0, 0, 80, 80)
   const tinyShape: Shape = { id: 'st_offset_tiny', name: '刀补失败用例', layer: 0, contours: [outerSquare, thinInner] }
-  const tinyOffset = computeShape(tinyShape, { ...settings, useBladeOffset: true }, mat)
+  const tinyOffset = computeShape(tinyShape, { ...settings, useBladeOffset: true, offsetFailureAction: 'keep_original' }, mat)
   const tinyEntry = tinyOffset.byId.get(thinInner.id)
   const tinyOk = tinyEntry?.offsetOk ?? true
   const tinyMsg = tinyEntry?.offsetMessage ?? ''
@@ -450,6 +450,42 @@ export async function runSelfTest(settings: CutSettings = DEFAULT_CUT_SETTINGS, 
       '刀补超出轮廓尺度时明确警告并保留原路径（不输出坏路径）',
       !tinyOk && tinyMsg.includes('原路径') && tinyRuns > 0,
       `0.3mm 细长条（内层，向内侧偏置 ${mat.bladeOffsetMm}mm）：${tinyMsg}｜仍输出 ${tinyRuns} 段原路径`,
+    ),
+  )
+
+  const retryShape: Shape = { id: 'st_offset_retry', name: '刀补缩小重试用例', layer: 0, contours: [rectContour('st_retry_outer', 0, 0, 80, 80), rectContour('st_retry_thin', 30, 39.85, 20, 0.3)] }
+  const retryComp = computeShape(
+    retryShape,
+    { ...settings, useBladeOffset: true, offsetFailureAction: 'retry_reduced', offsetRetryRatio: 0.5 },
+    mat,
+  )
+  const retryEntry = retryComp.byId.get('st_retry_thin')
+  checks.push(
+    ok(
+      'blade-offset-retry',
+      '刀补失败可按设置缩小重试一次，并在问题清单中提示已缩小',
+      retryEntry?.offsetState === 'reduced' && Math.abs(retryEntry.offset.appliedMm - mat.bladeOffsetMm * 0.5) < 1e-6,
+      retryEntry ? `${retryEntry.offsetMessage}｜实际刀补 ${retryEntry.offset.appliedMm.toFixed(3)}mm` : '未生成轮廓',
+    ),
+  )
+
+  const offContour = makeStar(80, 80, 40, 20, 5, 0.3)
+  offContour.id = 'st_star_off'
+  offContour.offsetRule = { mode: 'off', customMm: 0.2, failureAction: 'keep_original' }
+  const customContour = makeStar(80, 80, 40, 20, 5, 0.3)
+  customContour.id = 'st_star_custom'
+  customContour.offsetRule = { mode: 'custom', customMm: 0.08, failureAction: 'keep_original' }
+  const perContourShape: Shape = { id: 'st_offset_per', name: '分轮廓刀补用例', layer: 0, contours: [offContour, customContour] }
+  const perContourComp = computeShape(perContourShape, { ...settings, useBladeOffset: true }, mat)
+  const disabledEntry = perContourComp.byId.get(offContour.id)
+  const customEntry = perContourComp.byId.get(customContour.id)
+  const offUnchanged = JSON.stringify(disabledEntry?.runs) === JSON.stringify(disabledEntry?.baselineRuns)
+  checks.push(
+    ok(
+      'blade-offset-per-contour',
+      '每条轮廓可单独跟随材料 / 指定刀补量 / 不偏置',
+      disabledEntry?.offsetState === 'off' && offUnchanged && customEntry?.offset.requestedMm === 0.08 && customEntry.offset.appliedMm === 0.08,
+      `不偏置轮廓状态=${disabledEntry?.offsetState}｜指定刀补轮廓 ${customEntry?.offset.requestedMm}mm → 实际 ${customEntry?.offset.appliedMm}mm`,
     ),
   )
 

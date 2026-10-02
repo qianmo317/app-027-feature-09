@@ -43,7 +43,12 @@ export function buildBatchShape(shape: Shape, batch: BatchCfg): Shape {
           const y = mirrorY ? b.maxY - (p.y - b.minY) : p.y
           return { x: x - b.minX + ox, y: y - b.minY + oy }
         })
-        const nc = makeContour(pts, src.closed, src.warnings.filter((wn) => wn === 'not_closed' || wn === 'self_intersect'))
+        const nc = makeContour(
+          pts,
+          src.closed,
+          src.warnings.filter((wn) => wn === 'not_closed' || wn === 'self_intersect'),
+          src.offsetRule,
+        )
         contours.push(nc)
       }
     }

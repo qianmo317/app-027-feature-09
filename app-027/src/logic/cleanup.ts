@@ -1,4 +1,5 @@
 import type { Contour, ContourWarning, Pt } from './types'
+import { normalizeContourOffsetRule } from './types'
 import {
   cleanPoints,
   cyclicMatch,
@@ -32,7 +33,7 @@ export type CleanupReport = {
   selfIntersections: Record<string, number>
 }
 
-export function makeContour(points: Pt[], closed: boolean, warnings: ContourWarning[] = []): Contour {
+export function makeContour(points: Pt[], closed: boolean, warnings: ContourWarning[] = [], offsetRule?: Contour['offsetRule']): Contour {
   const pts = points.map((p) => ({ x: round3(p.x), y: round3(p.y) }))
   return {
     id: uid('c'),
@@ -42,6 +43,7 @@ export function makeContour(points: Pt[], closed: boolean, warnings: ContourWarn
     length: polylineLength(pts, closed),
     holes: [],
     bridges: [],
+    offsetRule: normalizeContourOffsetRule(offsetRule),
     warnings: [...warnings],
   }
 }

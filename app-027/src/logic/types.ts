@@ -7,11 +7,39 @@ export type ContourWarning =
   | 'duplicate'
   | 'offset_clipped'
   | 'offset_failed'
+  | 'offset_reduced'
+  | 'offset_pending'
   | 'bridge_degraded'
   | 'too_short'
 
 /** 连刀点：atIndex 为锚点在 points 中的顶点下标，widthMm 为缺口宽度 */
 export type Bridge = { atIndex: number; widthMm: number }
+
+/** 刀补档位：跟随材料默认 / 指定刀补量 / 不偏置 */
+export type ContourOffsetMode = 'material' | 'custom' | 'off'
+
+/** 刀补失败后的处理：缩小重试一次 / 保留原路径并加入待处理清单 */
+export type OffsetFailureAction = 'retry_reduced' | 'keep_original'
+
+export type ContourOffsetRule = {
+  mode: ContourOffsetMode
+  /** mode=custom 时使用的偏置量（mm） */
+  customMm: number
+  /** 留空时使用项目默认失败策略 */
+  failureAction?: OffsetFailureAction
+}
+
+export const DEFAULT_CONTOUR_OFFSET_RULE: ContourOffsetRule = {
+  mode: 'material',
+  customMm: 0.2,
+}
+
+export function normalizeContourOffsetRule(rule?: Partial<ContourOffsetRule> | null): ContourOffsetRule {
+  const mode: ContourOffsetMode = rule?.mode === 'custom' || rule?.mode === 'off' ? rule.mode : 'material'
+  const failureAction: OffsetFailureAction | undefined = rule?.failureAction === 'keep_original' || rule?.failureAction === 'retry_reduced' ? rule.failureAction : undefined
+  const customMm = Number.isFinite(rule?.customMm as number) ? Math.max(0, Number(rule?.customMm)) : DEFAULT_CONTOUR_OFFSET_RULE.customMm
+  return { mode, customMm, ...(failureAction ? { failureAction } : {}) }
+}
 
 export type Contour = {
   id: string
@@ -24,6 +52,8 @@ export type Contour = {
   /** 直接子轮廓（内层）id */
   holes: string[]
   bridges: Bridge[]
+  /** 当前轮廓的刀补档位；未配置时按材料默认 */
+  offsetRule?: ContourOffsetRule
   warnings: ContourWarning[]
 }
 
@@ -52,8 +82,12 @@ export type CutSettings = {
   toleranceMm: number
   /** 闭合判定容差（mm） */
   closeToleranceMm: number
-  /** 是否启用刀补偏置 */
+  /** 是否启用刀补偏置（材料默认档位的总开关；单轮廓可关闭或指定刀补） */
   useBladeOffset: boolean
+  /** 刀补失败的项目默认处理方式；单轮廓可覆盖 */
+  offsetFailureAction: OffsetFailureAction
+  /** 缩小重试的刀补比例，如 0.5 表示按原刀补的 50% 再试一次 */
+  offsetRetryRatio: number
 }
 
 export type ExportCfg = {
@@ -106,6 +140,8 @@ export const DEFAULT_CUT_SETTINGS: CutSettings = {
   toleranceMm: 0.15,
   closeToleranceMm: 0.2,
   useBladeOffset: false,
+  offsetFailureAction: 'retry_reduced',
+  offsetRetryRatio: 0.5,
 }
 
 export const DEFAULT_EXPORT_CFG: ExportCfg = {

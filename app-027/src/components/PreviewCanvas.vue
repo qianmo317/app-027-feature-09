@@ -23,6 +23,8 @@ const props = withDefaults(
     showNumbers?: boolean
     showTravel?: boolean
     magnify?: boolean
+    showBaseline?: boolean
+    baselineComputed?: Map<string, ComputedShape> | null
     selectedContourId?: string | null
     simPath?: Pt[] | null
     simIndex?: number
@@ -38,6 +40,8 @@ const props = withDefaults(
     showNumbers: true,
     showTravel: true,
     magnify: true,
+    showBaseline: false,
+    baselineComputed: null,
     selectedContourId: null,
     simPath: null,
     simIndex: -1,
@@ -296,6 +300,8 @@ const WARNING_COLOR: Record<string, string> = {
   self_intersect: '#ff6b6b',
   duplicate: '#b48cff',
   offset_failed: '#ff6b6b',
+  offset_pending: '#ff6b6b',
+  offset_reduced: '#ffc857',
   offset_clipped: '#5aa9ff',
   bridge_degraded: '#ff8f3c',
 }
@@ -312,14 +318,29 @@ const outlineContours = computed<DrawContour[]>(() => {
   const out: DrawContour[] = []
   for (const s of props.shapes) {
     for (const c of s.contours) {
-      const bad = c.warnings.find((w) => w === 'self_intersect' || w === 'not_closed' || w === 'duplicate')
+      const entry = props.computed.get(s.id)?.byId.get(c.id)
+      const bad = c.warnings.find((w) => w === 'self_intersect' || w === 'not_closed' || w === 'duplicate' || w === 'offset_pending' || w === 'offset_reduced' || w === 'offset_clipped')
+      const offsetColor =
+        entry?.offsetState === 'pending'
+          ? '#ff6b6b'
+          : entry?.offsetState === 'reduced'
+            ? '#ffc857'
+            : entry?.offsetState === 'clipped'
+              ? '#5aa9ff'
+              : entry?.offsetState === 'applied'
+                ? '#47c07a'
+                : entry?.offset.modeLabel === '不偏置'
+                  ? '#7f8fa3'
+                  : props.mode === 'bridge'
+                    ? '#4a5768'
+                    : '#cfd9e4'
       out.push({
         id: c.id,
         shapeId: s.id,
         d: pointsToD(c.points, c.closed),
         contour: c,
-        color: bad ? WARNING_COLOR[bad] : props.mode === 'bridge' ? '#4a5768' : '#cfd9e4',
-        dash: bad === 'duplicate' ? '5 4' : bad === 'not_closed' ? '7 4' : '',
+        color: bad ? WARNING_COLOR[bad] : offsetColor,
+        dash: bad === 'duplicate' ? '5 4' : bad === 'not_closed' ? '7 4' : entry?.offset.modeLabel === '不偏置' ? '2 3' : bad === 'offset_pending' ? '8 3' : '',
         width: c.id === props.selectedContourId ? 2.4 : 1.2,
       })
     }
@@ -336,6 +357,21 @@ const cutSteps = computed<CutStep[]>(() => {
     const c = props.computed.get(s.id)
     if (!c) continue
     for (const st of c.order.steps) out.push(st)
+  }
+  return out
+})
+
+const baselineSteps = computed(() => {
+  const out: Array<{ id: string; d: string; selected: boolean }> = []
+  for (const s of props.shapes) {
+    const c = props.baselineComputed?.get(s.id) ?? props.computed.get(s.id)
+    if (!c) continue
+    for (const [id, entry] of c.byId) {
+      const runs = props.baselineComputed ? entry.runs : entry.baselineRuns
+      for (const r of runs) {
+        out.push({ id, d: pointsToD(r.points.map(pl), r.closed), selected: id === props.selectedContourId })
+      }
+    }
   }
   return out
 })
@@ -530,6 +566,19 @@ function focusContour(id: string): void {
             :stroke="c.color"
             :stroke-dasharray="c.dash"
             :stroke-width="c.width"
+            vector-effect="non-scaling-stroke"
+          />
+        </g>
+
+        <!-- 重算前原刀路对照 -->
+        <g v-if="showBaseline && mode === 'toolpath'" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <path
+            v-for="(p, i) in baselineSteps"
+            :key="`base${p.id}-${i}`"
+            :d="p.d"
+            :stroke="p.selected ? '#9fe8c0' : '#7f8fa3'"
+            stroke-width="1"
+            stroke-dasharray="3 3"
             vector-effect="non-scaling-stroke"
           />
         </g>

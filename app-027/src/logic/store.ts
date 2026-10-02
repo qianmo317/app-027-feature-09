@@ -4,6 +4,7 @@ import {
   DEFAULT_EXPORT_CFG,
   DEFAULT_SHEET,
   type BatchCfg,
+  type ContourOffsetRule,
   type ContourWarning,
   type CutSettings,
   type ExportCfg,
@@ -11,6 +12,7 @@ import {
   type Project,
   type Shape,
   type Sheet,
+  normalizeContourOffsetRule,
 } from './types'
 import { computeShape, shapeSignature, type ComputedShape } from './pipeline'
 import { buildBatchShape, buildJob, type Job } from './job'
@@ -103,7 +105,13 @@ function normalizeProject(p: Project): Project {
     sheet: p.sheet ?? { ...DEFAULT_SHEET },
     shapes: (p.shapes ?? []).map((s) => ({
       ...s,
-      contours: (s.contours ?? []).map((c) => ({ ...c, holes: c.holes ?? [], bridges: c.bridges ?? [], warnings: c.warnings ?? [] })),
+      contours: (s.contours ?? []).map((c) => ({
+        ...c,
+        holes: c.holes ?? [],
+        bridges: c.bridges ?? [],
+        offsetRule: normalizeContourOffsetRule(c.offsetRule),
+        warnings: c.warnings ?? [],
+      })),
     })),
     layerNames: p.layerNames ?? ['图层 1'],
   }
@@ -276,6 +284,24 @@ export function updateSettings(p: Project, patch: Partial<CutSettings>): void {
   touch(p)
 }
 
+export function updateContourOffset(p: Project, contourId: string, patch: Partial<ContourOffsetRule>): void {
+  for (const shape of p.shapes) {
+    const contour = shape.contours.find((c) => c.id === contourId)
+    if (!contour) continue
+    contour.offsetRule = normalizeContourOffsetRule({ ...contour.offsetRule, ...patch })
+    recomputeProject(p, true)
+    touch(p)
+    return
+  }
+}
+
+export function resetContourOffset(p: Project, contourId: string): void {
+  updateContourOffset(p, contourId, {
+    mode: 'material',
+    customMm: materialOf(p)?.bladeOffsetMm ?? 0.2,
+  })
+}
+
 export function updateExport(p: Project, patch: Partial<ExportCfg>): void {
   Object.assign(p.export, patch)
   touch(p)
@@ -387,7 +413,7 @@ export function applySymmetry(p: Project, shapeId: string, op: 'mirror_x' | 'mir
         const r = fn(q.x, q.y)
         return { x: Math.round(r.x * 1000) / 1000, y: Math.round(r.y * 1000) / 1000 }
       })
-      return { ...c, id: uid('c'), points: pts, holes: [], bridges: [], warnings: [] }
+      return { ...c, id: uid('c'), points: pts, holes: [], bridges: [], offsetRule: normalizeContourOffsetRule(c.offsetRule), warnings: [] }
     })
     return { id: uid('s'), name: `${shape.name} 对称`, contours, layer: shape.layer }
   }
@@ -483,6 +509,8 @@ export const store = {
   closeAllOpen,
   closeContour,
   removeContour,
+  updateContourOffset,
+  resetContourOffset,
   placeManualBridge,
   clearManualBridges,
   applySymmetry,

@@ -4,7 +4,7 @@ import type { Pt, Shape, Sheet } from '@/logic/types'
 import type { ComputedShape } from '@/logic/pipeline'
 import type { Job } from '@/logic/job'
 import type { CutStep } from '@/logic/order'
-import { closestOnPolyline, boundsOf, mergeBounds } from '@/logic/geometry'
+import { closestOnPolyline, boundsOf, interiorPoint, mergeBounds } from '@/logic/geometry'
 import type { SheetPlacement } from '@/logic/exporters'
 import { placePoint } from '@/logic/exporters'
 
@@ -24,6 +24,7 @@ const props = withDefaults(
     showTravel?: boolean
     magnify?: boolean
     selectedContourId?: string | null
+    showOffsetBadges?: boolean
     simPath?: Pt[] | null
     simIndex?: number
     placement?: SheetPlacement | null
@@ -39,6 +40,7 @@ const props = withDefaults(
     showTravel: true,
     magnify: true,
     selectedContourId: null,
+    showOffsetBadges: false,
     simPath: null,
     simIndex: -1,
     placement: null,
@@ -296,6 +298,8 @@ const WARNING_COLOR: Record<string, string> = {
   self_intersect: '#ff6b6b',
   duplicate: '#b48cff',
   offset_failed: '#ff6b6b',
+  offset_pending: '#ff6b6b',
+  offset_reduced: '#ff8f3c',
   offset_clipped: '#5aa9ff',
   bridge_degraded: '#ff8f3c',
 }
@@ -312,7 +316,7 @@ const outlineContours = computed<DrawContour[]>(() => {
   const out: DrawContour[] = []
   for (const s of props.shapes) {
     for (const c of s.contours) {
-      const bad = c.warnings.find((w) => w === 'self_intersect' || w === 'not_closed' || w === 'duplicate')
+      const bad = c.warnings.find((w) => w === 'self_intersect' || w === 'not_closed' || w === 'duplicate' || w === 'offset_pending' || w === 'offset_failed')
       out.push({
         id: c.id,
         shapeId: s.id,
@@ -322,6 +326,38 @@ const outlineContours = computed<DrawContour[]>(() => {
         dash: bad === 'duplicate' ? '5 4' : bad === 'not_closed' ? '7 4' : '',
         width: c.id === props.selectedContourId ? 2.4 : 1.2,
       })
+    }
+  }
+  return out
+})
+
+/** 刀补档位角标：跟材料(M) / 指定量(C) / 不偏(–)，颜色表示实际状态 */
+const offsetBadges = computed(() => {
+  if (!props.showOffsetBadges) return []
+  const out: Array<{ id: string; x: number; y: number; label: string; color: string }> = []
+  for (const s of props.shapes) {
+    const comp = props.computed.get(s.id)
+    for (const c of s.contours) {
+      if (!c.closed || c.points.length < 3) continue
+      const mode = c.offsetCfg?.mode ?? 'material'
+      const st = comp?.byId.get(c.id)?.offset
+      const applied = st?.appliedMm ?? 0
+      // 跟材料且未生效（总开关关）、显式不偏 → 不显示角标，避免干净图太花
+      if (mode === 'off') continue
+      if (mode === 'material' && applied < 1e-9 && !st?.failed) continue
+      let color = '#6db8ff'
+      let label = `M${applied.toFixed(2)}`
+      if (mode === 'custom') label = `C${applied.toFixed(2)}`
+      if (st?.failed) {
+        color = '#ff6b6b'
+        label = '!'
+      } else if (st?.retried) {
+        color = '#ff8f3c'
+        label = `C${applied.toFixed(2)}`
+      } else if (st?.clipped) {
+        color = '#ffd166'
+      }
+      out.push({ id: c.id, x: interiorPoint(c.points).x, y: interiorPoint(c.points).y, label, color })
     }
   }
   return out
@@ -532,6 +568,21 @@ function focusContour(id: string): void {
             :stroke-width="c.width"
             vector-effect="non-scaling-stroke"
           />
+        </g>
+
+        <!-- 刀补档位角标 -->
+        <g v-if="(mode === 'outline' || mode === 'bridge') && showOffsetBadges">
+          <g v-for="b in offsetBadges" :key="`ob${b.id}`">
+            <rect :x="b.x - (b.label.length * 1.9 + 1)" :y="b.y - 2.6" :width="b.label.length * 3.8 + 2" :height="5.2" rx="1" fill="#12161b" :stroke="b.color" :stroke-width="0.5 / zoom" />
+            <text
+              :x="b.x"
+              :y="b.y + 1.9"
+              :font-size="3.6"
+              text-anchor="middle"
+              :fill="b.color"
+              font-family="Plotter Mono, monospace"
+            >{{ b.label }}</text>
+          </g>
         </g>
 
         <!-- 刀路（切割顺序） -->

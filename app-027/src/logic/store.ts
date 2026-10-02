@@ -3,11 +3,14 @@ import {
   DEFAULT_CUT_SETTINGS,
   DEFAULT_EXPORT_CFG,
   DEFAULT_SHEET,
+  DEFAULT_CONTOUR_OFFSET,
   type BatchCfg,
+  type ContourOffsetCfg,
   type ContourWarning,
   type CutSettings,
   type ExportCfg,
   type MaterialPreset,
+  type OffsetMode,
   type Project,
   type Shape,
   type Sheet,
@@ -103,10 +106,24 @@ function normalizeProject(p: Project): Project {
     sheet: p.sheet ?? { ...DEFAULT_SHEET },
     shapes: (p.shapes ?? []).map((s) => ({
       ...s,
-      contours: (s.contours ?? []).map((c) => ({ ...c, holes: c.holes ?? [], bridges: c.bridges ?? [], warnings: c.warnings ?? [] })),
+      contours: (s.contours ?? []).map((c) => ({
+        ...c,
+        holes: c.holes ?? [],
+        bridges: c.bridges ?? [],
+        warnings: c.warnings ?? [],
+        offsetCfg: normalizeOffsetCfg(c.offsetCfg),
+      })),
     })),
     layerNames: p.layerNames ?? ['图层 1'],
   }
+}
+
+/** 旧项目 / 导入轮廓的刀补档位归一化（缺省 = 跟材料走） */
+function normalizeOffsetCfg(cfg: ContourOffsetCfg | undefined): ContourOffsetCfg {
+  if (!cfg || (cfg.mode !== 'material' && cfg.mode !== 'custom' && cfg.mode !== 'off')) {
+    return { ...DEFAULT_CONTOUR_OFFSET }
+  }
+  return { mode: cfg.mode, customMm: Math.max(0, Number.isFinite(cfg.customMm) ? cfg.customMm : DEFAULT_CONTOUR_OFFSET.customMm) }
 }
 
 export function materialOf(p: Project): MaterialPreset | null {
@@ -136,7 +153,9 @@ function applyComputed(shape: Shape, res: ComputedShape): void {
     const base = c.warnings.filter(
       (w) => w === 'not_closed' || w === 'self_intersect' || w === 'duplicate' || w === 'too_short',
     ) as ContourWarning[]
-    const extra = res.warningUpdates.get(c.id) ?? []
+    const extra = (res.warningUpdates.get(c.id) ?? []).filter(
+      (w) => w === 'offset_clipped' || w === 'offset_reduced' || w === 'offset_failed' || w === 'offset_pending' || w === 'bridge_degraded',
+    )
     c.warnings = [...base, ...extra.filter((w) => !base.includes(w))]
   }
 }
@@ -370,6 +389,68 @@ export function clearManualBridges(p: Project, contourId?: string): void {
   touch(p)
 }
 
+// ---------------- 单轮廓刀补档位 ----------------
+
+function findContour(p: Project, contourId: string): Shape['contours'][number] | null {
+  for (const s of p.shapes) {
+    const c = s.contours.find((x) => x.id === contourId)
+    if (c) return c
+  }
+  return null
+}
+
+/** 设置单条轮廓的刀补档位（跟材料 / 指定量 / 不偏） */
+export function setContourOffset(p: Project, contourId: string, mode: OffsetMode, customMm?: number): void {
+  const c = findContour(p, contourId)
+  if (!c) return
+  const prev = c.offsetCfg ?? { ...DEFAULT_CONTOUR_OFFSET }
+  c.offsetCfg = {
+    mode,
+    customMm: customMm !== undefined ? Math.max(0, Number(customMm.toFixed(3))) : prev.customMm,
+  }
+  recomputeProject(p, true)
+  touch(p)
+}
+
+/** 偏置失败后的「缩小重试」：把该轮廓改成指定量档，取上次请求量的一半（mm ≥ 下限） */
+export function retryContourOffsetReduced(p: Project, contourId: string): boolean {
+  const c = findContour(p, contourId)
+  if (!c) return false
+  const shape = p.shapes.find((s) => s.contours.some((x) => x.id === contourId))
+  const comp = shape ? computedCache[shape.id] : null
+  const entry = comp?.byId.get(contourId)
+  const prevReq = entry?.offset.requestedMm ?? materialOf(p)?.bladeOffsetMm ?? 0
+  const reduced = Math.max(0.02, Number((prevReq * 0.5).toFixed(3)))
+  c.offsetCfg = { mode: 'custom', customMm: reduced }
+  recomputeProject(p, true)
+  touch(p)
+  return (computedCache[shape!.id]?.byId.get(contourId)?.offset.failed ?? true) === false
+}
+
+/** 偏置失败后的「原路径出图」：该轮廓设为不偏（并从待处理清单移除） */
+export function setContourOffsetOff(p: Project, contourId: string): void {
+  setContourOffset(p, contourId, 'off')
+}
+
+/** 把所有待处理（偏置失败）轮廓批量设为不偏，按原路径出图 */
+export function resolveAllPendingAsOff(p: Project): number {
+  let n = 0
+  for (const s of p.shapes) {
+    const comp = computedCache[s.id]
+    for (const c of s.contours) {
+      if (comp?.byId.get(c.id)?.offset.failed) {
+        c.offsetCfg = { ...(c.offsetCfg ?? DEFAULT_CONTOUR_OFFSET), mode: 'off' }
+        n += 1
+      }
+    }
+  }
+  if (n > 0) {
+    recomputeProject(p, true)
+    touch(p)
+  }
+  return n
+}
+
 /** 纹样对称生成：镜像 / 旋转 / 四方连续 */
 export function applySymmetry(p: Project, shapeId: string, op: 'mirror_x' | 'mirror_y' | 'rotate_90' | 'rotate_180' | 'four_way'): void {
   const shape = p.shapes.find((s) => s.id === shapeId)
@@ -485,6 +566,10 @@ export const store = {
   removeContour,
   placeManualBridge,
   clearManualBridges,
+  setContourOffset,
+  retryContourOffsetReduced,
+  setContourOffsetOff,
+  resolveAllPendingAsOff,
   applySymmetry,
   upsertMaterial,
   deleteMaterial,

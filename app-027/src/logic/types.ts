@@ -6,9 +6,26 @@ export type ContourWarning =
   | 'self_intersect'
   | 'duplicate'
   | 'offset_clipped'
+  | 'offset_reduced'
   | 'offset_failed'
+  | 'offset_pending'
   | 'bridge_degraded'
   | 'too_short'
+
+/**
+ * 刀补档位（按轮廓单独设置）：
+ * - material：跟材料默认走（总开关关闭时等于不偏）
+ * - custom：按本轮廓指定的偏置量（总开关关闭也照常偏置）
+ * - off：本轮廓不偏
+ */
+export type OffsetMode = 'material' | 'custom' | 'off'
+
+/** 单条轮廓的刀补设置 */
+export type ContourOffsetCfg = {
+  mode: OffsetMode
+  /** mode = custom 时的偏置量（mm，始终为正；方向按外/内层自动） */
+  customMm: number
+}
 
 /** 连刀点：atIndex 为锚点在 points 中的顶点下标，widthMm 为缺口宽度 */
 export type Bridge = { atIndex: number; widthMm: number }
@@ -24,6 +41,8 @@ export type Contour = {
   /** 直接子轮廓（内层）id */
   holes: string[]
   bridges: Bridge[]
+  /** 刀补档位（缺省 = 跟材料默认走，由 normalize 补齐） */
+  offsetCfg?: ContourOffsetCfg
   warnings: ContourWarning[]
 }
 
@@ -52,9 +71,16 @@ export type CutSettings = {
   toleranceMm: number
   /** 闭合判定容差（mm） */
   closeToleranceMm: number
-  /** 是否启用刀补偏置 */
+  /** 是否启用刀补总开关（材料默认档：开启后「跟材料走」的轮廓按材料刀偏偏置） */
   useBladeOffset: boolean
+  /** 偏置失败时的后续策略：缩小一半重试一次 / 原路径出图并进待处理清单 */
+  offsetFailPolicy: 'retry_halved' | 'passthrough'
 }
+
+export const DEFAULT_CONTOUR_OFFSET: ContourOffsetCfg = { mode: 'material', customMm: 0.2 }
+
+/** 缩小重试时的偏置量下限（mm），低于此值不再重试 */
+export const MIN_RETRY_OFFSET_MM = 0.02
 
 export type ExportCfg = {
   format: 'plt' | 'gcode' | 'svg'
@@ -106,6 +132,7 @@ export const DEFAULT_CUT_SETTINGS: CutSettings = {
   toleranceMm: 0.15,
   closeToleranceMm: 0.2,
   useBladeOffset: false,
+  offsetFailPolicy: 'passthrough',
 }
 
 export const DEFAULT_EXPORT_CFG: ExportCfg = {

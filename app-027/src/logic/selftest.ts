@@ -439,17 +439,75 @@ export async function runSelfTest(settings: CutSettings = DEFAULT_CUT_SETTINGS, 
   const thinInner = rectContour('st_thin', 30, 39.85, 20, 0.3)
   const outerSquare = rectContour('st_outer', 0, 0, 80, 80)
   const tinyShape: Shape = { id: 'st_offset_tiny', name: '刀补失败用例', layer: 0, contours: [outerSquare, thinInner] }
-  const tinyOffset = computeShape(tinyShape, { ...settings, useBladeOffset: true }, mat)
+  const tinyOffset = computeShape(tinyShape, { ...settings, useBladeOffset: true, offsetFailPolicy: 'passthrough' }, mat)
   const tinyEntry = tinyOffset.byId.get(thinInner.id)
   const tinyOk = tinyEntry?.offsetOk ?? true
   const tinyMsg = tinyEntry?.offsetMessage ?? ''
   const tinyRuns = tinyEntry?.runs.length ?? 0
+  const tinyPending = tinyOffset.stats.offsetPending
   checks.push(
     ok(
       'blade-offset-fail',
-      '刀补超出轮廓尺度时明确警告并保留原路径（不输出坏路径）',
-      !tinyOk && tinyMsg.includes('原路径') && tinyRuns > 0,
-      `0.3mm 细长条（内层，向内侧偏置 ${mat.bladeOffsetMm}mm）：${tinyMsg}｜仍输出 ${tinyRuns} 段原路径`,
+      '刀补超出轮廓尺度时：原路径出图并进待处理清单（不输出坏路径）',
+      !tinyOk && tinyMsg.includes('原路径') && tinyRuns > 0 && tinyPending === 1,
+      `0.3mm 细长条（内层，向内侧偏置 ${mat.bladeOffsetMm}mm）：${tinyMsg}｜仍输出 ${tinyRuns} 段原路径｜待处理清单 ${tinyPending} 条`,
+    ),
+  )
+
+  // 同一失败用例：失败策略 = 缩小一半重试一次（0.25 → 0.125mm，0.3mm 细条向内 0.125 会剩 0.05，仍可能失败 → 再测一个可成功的轮廓）
+  const retryShape: Shape = {
+    id: 'st_offset_retry',
+    name: '刀补重试用例',
+    layer: 0,
+    // 1.0mm 细条：全量 0.25 向内 → 余 0.5，通常 OK；造一个 0.36mm 的窄腰条使全量失败、半量成功
+    contours: [outerSquare.id === 'st_outer' ? rectContour('st_outer2', 0, 0, 80, 80) : rectContour('st_outer2', 0, 0, 80, 80), rectContour('st_retry_inner', 30, 39.82, 20, 0.36)],
+  }
+  const retryComp = computeShape(retryShape, { ...settings, useBladeOffset: true, offsetFailPolicy: 'retry_halved' }, mat)
+  const retryEntry = retryComp.byId.get('st_retry_inner')
+  const retryOk = retryEntry?.offsetOk ?? false
+  const retryApplied = retryEntry?.offset.appliedMm ?? -1
+  const retryWasTried = retryEntry?.offset.retried ?? false
+  const retryPending = retryComp.stats.offsetPending
+  checks.push(
+    ok(
+      'blade-offset-retry',
+      '失败策略「缩小一半重试一次」：全量失败时自动按半量重试，成功后不进待处理清单',
+      retryWasTried && retryOk && Math.abs(retryApplied - mat.bladeOffsetMm * 0.5) < 1e-6 && retryPending === 0,
+      `0.36mm 细条全量 ${mat.bladeOffsetMm}mm 失败 → 半量 ${(mat.bladeOffsetMm * 0.5).toFixed(3)}mm 重试 ${retryOk ? '成功' : '失败'}，实际生效 ${retryApplied.toFixed(3)}mm｜待处理 ${retryPending} 条`,
+    ),
+  )
+
+  // 每条轮廓可单独设置：跟材料 / 指定量 / 不偏
+  const perContourShape: Shape = {
+    id: 'st_offset_per',
+    name: '刀补分档用例',
+    layer: 0,
+    contours: [
+      { ...rectContour('pc_a', 0, 0, 80, 80), offsetCfg: { mode: 'material', customMm: 0 } },
+      { ...rectContour('pc_b', 10, 10, 10, 10), offsetCfg: { mode: 'custom', customMm: 0.08 } },
+      { ...rectContour('pc_c', 30, 30, 10, 10), offsetCfg: { mode: 'off', customMm: 0 } },
+    ],
+  }
+  const perComp = computeShape(perContourShape, { ...settings, useBladeOffset: false, offsetFailPolicy: 'passthrough' }, mat)
+  const eA = perComp.byId.get('pc_a')
+  const eB = perComp.byId.get('pc_b')
+  const eC = perComp.byId.get('pc_c')
+  const perOk =
+    (eA?.offset.appliedMm ?? -1) === 0 &&
+    eA?.offset.mode === 'material' &&
+    Math.abs((eB?.offset.appliedMm ?? -1) - 0.08) < 1e-9 &&
+    eB?.offset.mode === 'custom' &&
+    (eC?.offset.appliedMm ?? -1) === 0 &&
+    eC?.offset.mode === 'off'
+  // 总开关关闭时：跟材料不生效，但自定义档照常偏置
+  const bRuns = JSON.stringify(eB?.runs)
+  const cRuns = JSON.stringify(eC?.runs)
+  checks.push(
+    ok(
+      'blade-offset-per-contour',
+      '刀补按轮廓分档：跟材料走 / 按指定量 / 不偏；总开关只影响「跟材料」档',
+      perOk && bRuns !== cRuns,
+      `总开关关闭：跟材料档生效 ${eA?.offset.appliedMm.toFixed(2)}mm｜自定义档生效 ${eB?.offset.appliedMm.toFixed(2)}mm（几何与不偏轮廓不同 = ${bRuns !== cRuns}）｜不偏 ${eC?.offset.appliedMm.toFixed(2)}mm`,
     ),
   )
 
